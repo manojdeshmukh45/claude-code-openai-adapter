@@ -1,15 +1,42 @@
+<div align="center">
+
 # claude-code-openai-adapter
 
-A small, **dependency-free** Python server that exposes an **OpenAI-compatible** `/v1/chat/completions`
-endpoint and answers it by running your locally installed, already logged-in **Claude Code** CLI
-(`claude -p`).
+**Use your logged-in Claude Code as an OpenAI-compatible API.**
 
-It lets tools that only speak "OpenAI-compatible API + API key" (agent frameworks, pentest/triage tools,
-scripts) talk to Claude through your Claude Code login instead of a separately billed API key.
+![license](https://img.shields.io/badge/license-MIT-6b34db)
+![python](https://img.shields.io/badge/python-3.8%2B-3776ab)
+![dependencies](https://img.shields.io/badge/dependencies-none-2ea44f)
+![tests](https://img.shields.io/badge/tests-20%20passing-2ea44f)
+![status](https://img.shields.io/badge/status-experimental-orange)
 
+[Quick start](#quick-start) · [API key and rotation](#api-key-generated-stored-rotatable) · [Use with ARTEX](#using-it-with-artex) · [Limitations](#limitations) · [Troubleshooting](#troubleshooting)
+
+</div>
+
+---
+
+A small server, **one Python file and no dependencies**, that speaks the OpenAI `/v1/chat/completions` format and
+answers by running your locally installed, logged-in **Claude Code** CLI (`claude -p`). Tools that only accept
+"OpenAI-compatible endpoint + API key" (agent frameworks, security-triage tools, scripts) can then talk to Claude
+without a separately billed API key.
+
+```mermaid
+flowchart LR
+  A["Your tool<br/>(OpenAI client)"] -- "POST /v1/chat/completions<br/>Bearer key" --> B["adapter.py"]
+  B -- "spawns" --> C["claude -p"]
+  C --> D["Claude"]
+  D --> C --> B -- "OpenAI-style JSON<br/>(tool_calls, usage)" --> A
 ```
-your tool ──HTTP (OpenAI format)──▶ adapter.py ──spawns──▶ claude -p ──▶ Claude
-```
+
+| | |
+|---|---|
+| **Zero setup** | `python3 adapter.py`. No `pip install`. |
+| **Auto-generated API key** | Created on first run, stored with mode 600, reused across restarts. |
+| **Live key rotation** | `python3 adapter.py rotate` takes effect immediately, no restart. |
+| **Tool calling** | Emulated through prompting, with repair of malformed JSON and XML-style replies. |
+| **Safe by default** | Binds to `127.0.0.1`, requires the key on every call, runs the model with no tools. |
+| **Drop-in** | Works with the OpenAI SDK, curl and any client that lets you set a base URL. |
 
 > **Read [Limitations](#limitations) and [Terms and responsibility](#terms-and-responsibility) first.**
 > Tool calling is emulated, replies are not truly streamed, and heavy automated use can burn through
