@@ -103,7 +103,7 @@ Any OpenAI-compatible client works with Chat Completions:
 
 ```python
 from openai import OpenAI
-c = OpenAI(base_url="http://127.0.0.1:8790/v1", api_key="<your ADAPTER_TOKEN>")
+c = OpenAI(base_url="http://127.0.0.1:8790/v1", api_key="<output of: python3 adapter.py token>")
 r = c.chat.completions.create(model="sonnet", messages=[{"role": "user", "content": "hello"}])
 print(r.choices[0].message.content)
 ```
@@ -112,7 +112,7 @@ Tool calling:
 
 ```bash
 curl -s http://127.0.0.1:8790/v1/chat/completions \
-  -H "Authorization: Bearer $ADAPTER_TOKEN" -H "Content-Type: application/json" -d '{
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{
     "model": "haiku",
     "messages": [{"role":"user","content":"What is the weather in Paris? Use the tool."}],
     "tools": [{"type":"function","function":{"name":"get_weather","description":"Get weather",
