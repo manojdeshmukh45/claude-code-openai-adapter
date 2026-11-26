@@ -132,11 +132,39 @@ def extract_json(text):
     return None
 
 
-def to_message(out, has_tools):
+INVOKE_RE = re.compile(r'<invoke\s+name="([^"]+)"\s*>(.*?)</invoke>', re.S)
+PARAM_RE = re.compile(r'<parameter\s+name="([^"]+)"\s*>(.*?)</parameter>', re.S)
+
+
+def parse_invokes(text, allowed=None):
+    """Models sometimes answer in the XML style  <invoke name="x"><parameter name="p">v</parameter></invoke>
+    instead of the requested JSON. Convert that to the same {"tool_calls": [...]} shape.
+    Parameter values that are valid JSON (numbers, arrays, objects) are decoded; the rest stay strings.
+    Only tools in `allowed` (if given) are accepted."""
+    calls = []
+    for name, body in INVOKE_RE.findall(text):
+        if allowed is not None and name not in allowed:
+            continue
+        args = {}
+        for k, v in PARAM_RE.findall(body):
+            v = v.strip()
+            try:
+                args[k] = json.loads(v)
+            except Exception:
+                args[k] = v
+        calls.append({"name": name, "arguments": args})
+    return calls
+
+
+def to_message(out, has_tools, tool_names=None):
     """Convert the raw model text into an OpenAI message + finish_reason."""
     msg, finish = {"role": "assistant", "content": out}, "stop"
     if has_tools:
         j = extract_json(out)
+        if not (isinstance(j, dict) and j.get("tool_calls")):
+            xml_calls = parse_invokes(out, set(tool_names) if tool_names else None)
+            if xml_calls:
+                j = {"tool_calls": xml_calls}
         if isinstance(j, dict) and j.get("tool_calls"):
             msg = {"role": "assistant", "content": None, "tool_calls": [
                 {"id": "call_" + uuid.uuid4().hex[:16], "type": "function",
@@ -215,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(json.dumps({"ts": time.strftime("%H:%M:%S"), "model": model,
                                     "tools": [t.get("function", t).get("name") for t in tools],
                                     "prompt_tail": prompt[-600:], "raw_output": out}) + "\n")
-        msg, finish = to_message(out, bool(tools))
+        msg, finish = to_message(out, bool(tools), [t.get("function", t).get("name") for t in tools])
         pt = sum(usage.get(k, 0) for k in
                  ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
         ct = usage.get("output_tokens", 0)

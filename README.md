@@ -149,6 +149,8 @@ Without systemd: `nohup python3 adapter.py > adapter.log 2>&1 &` (it will not su
    an instruction to reply with exactly one JSON object: `{"tool_calls":[...]}` or `{"content":"..."}`.
    That object is parsed (tolerating code fences, extra text, and **missing closing brackets**, which models
    do produce) and returned as an OpenAI `tool_calls` message with `finish_reason: "tool_calls"`.
+   If the model answers in the XML style (`<invoke name="x"><parameter name="p">v</parameter></invoke>`)
+   instead, that is converted too. Only tool names the caller declared are accepted.
 4. Token usage from the CLI is mapped to `usage` (cache tokens are counted as prompt tokens).
 
 ## API support

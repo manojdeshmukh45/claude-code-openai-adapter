@@ -55,6 +55,32 @@ class Conversion(unittest.TestCase):
         self.assertEqual((msg["content"], fin), ("hello", "stop"))
 
 
+class XmlInvokeFallback(unittest.TestCase):
+    NAMES = ["record_fact", "list_facts"]
+
+    def test_invoke_with_typed_params(self):
+        out = ('<invoke name="record_fact"> <parameter name="intent_id">8</parameter> '
+               '<parameter name="summary">found {x} here</parameter> </invoke>')
+        msg, fin = A.to_message(out, True, self.NAMES)
+        self.assertEqual(fin, "tool_calls")
+        args = json.loads(msg["tool_calls"][0]["function"]["arguments"])
+        self.assertEqual(args, {"intent_id": 8, "summary": "found {x} here"})
+
+    def test_multiple_and_empty_invokes(self):
+        out = '<invoke name="list_facts"> </invoke> <invoke name="record_fact"><parameter name="summary">a</parameter></invoke>'
+        msg, _ = A.to_message(out, True, self.NAMES)
+        self.assertEqual([c["function"]["name"] for c in msg["tool_calls"]], ["list_facts", "record_fact"])
+
+    def test_unknown_tool_is_ignored(self):
+        msg, fin = A.to_message('<invoke name="rm_rf"><parameter name="p">1</parameter></invoke>', True, self.NAMES)
+        self.assertEqual(fin, "stop")
+
+    def test_json_wins_over_empty_invoke_prefix(self):
+        out = '<invoke name="record_fact"> </invoke> </function_calls> {"tool_calls":[{"name":"list_facts","arguments":{}}]}'
+        msg, _ = A.to_message(out, True, self.NAMES)
+        self.assertEqual([c["function"]["name"] for c in msg["tool_calls"]], ["list_facts"])
+
+
 class Prompt(unittest.TestCase):
     def test_roles_and_tools(self):
         msgs = [{"role": "system", "content": "be brief"},
