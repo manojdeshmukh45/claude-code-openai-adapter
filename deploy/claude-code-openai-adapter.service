@@ -1,0 +1,22 @@
+# Install:  sudo cp deploy/claude-code-openai-adapter.service /etc/systemd/system/
+#           sudo systemctl daemon-reload && sudo systemctl enable --now claude-code-openai-adapter
+# Edit User, WorkingDirectory, the token and the bind address first.
+# The service must run as the SAME user that ran `claude` and logged in.
+[Unit]
+Description=OpenAI-compatible adapter for Claude Code
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/opt/claude-code-openai-adapter
+Environment=ADAPTER_TOKEN=change-me-to-a-long-random-string
+Environment=ADAPTER_HOST=127.0.0.1
+Environment=ADAPTER_PORT=8790
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /opt/claude-code-openai-adapter/adapter.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
