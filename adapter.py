@@ -13,6 +13,7 @@ client asks for `stream: true` the full answer is sent as a single SSE chunk.
 See README.md for setup, configuration and limitations.
 """
 import argparse
+import hmac
 import json
 import os
 import re
@@ -24,11 +25,12 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # --------------------------------------------------------------------------- config
 CFG = {
-    "token": "",
+    "token": "",            # fixed token from ADAPTER_TOKEN (overrides the token file)
+    "token_file": "",       # where the generated token is stored
     "model": "sonnet",
     "timeout": 300,
     "claude_bin": "claude",
@@ -46,6 +48,60 @@ bracket and brace is closed.
 
 TOOLS:
 """
+
+
+# --------------------------------------------------------------------------- token store
+def default_token_file():
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "claude-code-openai-adapter", "token")
+
+
+def new_token():
+    return "cca-" + secrets.token_hex(24)
+
+
+def write_token(path, token):
+    """Write the token atomically with mode 0600 (owner read/write only)."""
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(token + "\n")
+    os.replace(tmp, path)
+
+
+def read_token(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""
+
+
+def ensure_token(path):
+    """Return the stored token, generating and saving one on first use."""
+    t = read_token(path)
+    if not t:
+        t = new_token()
+        write_token(path, t)
+    return t
+
+
+_cache = {"mtime": None, "token": ""}
+
+
+def current_token():
+    """Token clients must present. ADAPTER_TOKEN wins; otherwise the token file,
+    re-read whenever it changes, so `rotate` takes effect without a restart."""
+    if CFG["token"]:
+        return CFG["token"]
+    try:
+        m = os.stat(CFG["token_file"]).st_mtime_ns
+    except FileNotFoundError:
+        return ""
+    if m != _cache["mtime"]:
+        _cache.update(mtime=m, token=read_token(CFG["token_file"]))
+    return _cache["token"]
 
 
 # --------------------------------------------------------------------------- prompt building
@@ -209,7 +265,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _authed(self):
-        if self.headers.get("Authorization") != "Bearer " + CFG["token"]:
+        tok = current_token()
+        given = (self.headers.get("Authorization") or "").encode()
+        if not tok or not hmac.compare_digest(given, ("Bearer " + tok).encode()):
             self._json(401, {"error": {"message": "unauthorized", "type": "auth_error"}})
             return False
         return True
@@ -280,7 +338,18 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     env = os.environ.get
-    ap = argparse.ArgumentParser(description="OpenAI-compatible endpoint backed by `claude -p`.")
+    argv = sys.argv[1:]
+    cmd = argv[0] if argv and argv[0] in ("serve", "token", "rotate") else "serve"
+    if argv and argv[0] in ("serve", "token", "rotate"):
+        argv = argv[1:]
+
+    ap = argparse.ArgumentParser(
+        prog="adapter.py [serve|token|rotate]",
+        description="OpenAI-compatible endpoint backed by `claude -p`. "
+                    "Commands: serve (default) runs the server; token prints the stored API key; "
+                    "rotate generates a new key (a running server picks it up immediately).")
+    ap.add_argument("--token-file", default=env("ADAPTER_TOKEN_FILE", default_token_file()),
+                    help="where the API key is stored (default: %s)" % default_token_file())
     ap.add_argument("--host", default=env("ADAPTER_HOST", "127.0.0.1"), help="bind address (default 127.0.0.1)")
     ap.add_argument("--port", type=int, default=int(env("ADAPTER_PORT", "8790")))
     ap.add_argument("--model", default=env("CLAUDE_MODEL", "sonnet"), help="default model alias")
@@ -290,21 +359,35 @@ def main():
     ap.add_argument("--log-calls", default=env("ADAPTER_LOG_CALLS", ""),
                     help="append raw prompts/replies to this JSONL file (debug only; contains your data)")
     ap.add_argument("--version", action="version", version=__version__)
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
-    token = env("ADAPTER_TOKEN", "")
-    generated = False
-    if not token:
-        token, generated = secrets.token_hex(16), True
-    CFG.update(token=token, model=a.model, timeout=a.timeout, claude_bin=a.claude_bin, log_calls=a.log_calls)
+    if cmd == "token":
+        print(ensure_token(a.token_file))
+        return
+    if cmd == "rotate":
+        t = new_token()
+        write_token(a.token_file, t)
+        print("New API key written to %s\n%s" % (a.token_file, t))
+        print("A running server accepts it immediately and rejects the old one. Update your clients.")
+        return
+
+    fixed = env("ADAPTER_TOKEN", "")
+    CFG.update(token=fixed, token_file=a.token_file, model=a.model, timeout=a.timeout,
+               claude_bin=a.claude_bin, log_calls=a.log_calls)
     global SEM
     SEM = threading.Semaphore(max(1, a.max_parallel))
+    if not fixed:
+        existed = bool(read_token(a.token_file))
+        ensure_token(a.token_file)
 
     print("claude-code-openai-adapter %s listening on http://%s:%d/v1" % (__version__, a.host, a.port), flush=True)
-    if generated:
-        print("No ADAPTER_TOKEN set; generated one for this run (use it as the API key):\n  " + token, flush=True)
+    if fixed:
+        print("API key: taken from ADAPTER_TOKEN (rotation via the token file is disabled).", flush=True)
+    else:
+        print("API key %s in %s (mode 600).\n  Show it:   python3 adapter.py token\n  Rotate it: python3 adapter.py rotate"
+              % ("loaded from" if existed else "generated and stored", a.token_file), flush=True)
     if a.host not in ("127.0.0.1", "localhost"):
-        print("NOTE: bound to %s. Anyone who can reach this port and has the token can spend your Claude usage." % a.host, flush=True)
+        print("NOTE: bound to %s. Anyone who can reach this port and has the key can spend your Claude usage." % a.host, flush=True)
     ThreadingHTTPServer((a.host, a.port), Handler).serve_forever()
 
 

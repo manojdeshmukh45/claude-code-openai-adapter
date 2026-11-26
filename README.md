@@ -41,17 +41,19 @@ claude -p "say hi"
 # 2. Get the adapter
 git clone <this repo> && cd claude-code-openai-adapter
 
-# 3. Run it (a random token is generated and printed if you don't set one)
-ADAPTER_TOKEN=$(openssl rand -hex 16) python3 adapter.py
-#   claude-code-openai-adapter 0.1.0 listening on http://127.0.0.1:8790/v1
+# 3. Run it. An API key is generated on first run and stored (mode 600)
+python3 adapter.py
+#   claude-code-openai-adapter 0.2.0 listening on http://127.0.0.1:8790/v1
+#   API key generated and stored in ~/.config/claude-code-openai-adapter/token (mode 600).
 
-# 4. Test it
+# 4. Show the key, then test
+KEY=$(python3 adapter.py token)
 curl -s http://127.0.0.1:8790/v1/chat/completions \
-  -H "Authorization: Bearer $ADAPTER_TOKEN" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"model":"haiku","messages":[{"role":"user","content":"Reply with: pong"}]}'
 ```
 
-Point your client at **base URL** `http://127.0.0.1:8790/v1`, **API key** = your token, **model**
+Point your client at **base URL** `http://127.0.0.1:8790/v1`, **API key** = the stored key, **model**
 `sonnet` / `opus` / `haiku`.
 
 ## Requirements
@@ -59,6 +61,25 @@ Point your client at **base URL** `http://127.0.0.1:8790/v1`, **API key** = your
 - Python 3.8+ (standard library only; nothing to `pip install`)
 - Claude Code installed and logged in **as the same OS user that runs the adapter**
   (`claude --version` must work; `claude -p "hi"` must answer)
+
+## API key: generated, stored, rotatable
+
+You never invent a key. On first start the adapter generates a random one (`cca-` + 48 hex characters) and
+stores it in `~/.config/claude-code-openai-adapter/token` (or `$XDG_CONFIG_HOME/...`), readable only by you
+(mode 600). Later runs reuse it, so clients keep working across restarts.
+
+```bash
+python3 adapter.py token     # print the current key (creates one if none exists)
+python3 adapter.py rotate    # generate a new key and store it
+```
+
+- **Rotation is live.** The server re-reads the key file when it changes, so after `rotate` the new key works and
+  the old one returns `401` immediately, with **no restart**. Update your clients with the new key.
+- Rotate after sharing the key anywhere it should not be, when someone leaves, or on a schedule (for example a
+  monthly cron job running `python3 adapter.py rotate`, followed by updating the clients).
+- `--token-file PATH` / `ADAPTER_TOKEN_FILE` moves the key file (useful for a service account or a mounted secret).
+- `ADAPTER_TOKEN` pins a fixed key instead and **disables** file-based rotation. Prefer the stored key.
+- Keys are compared in constant time. The key file is never logged.
 
 ## Configuration
 
@@ -68,7 +89,8 @@ Every option is a flag or an environment variable. Flags win.
 |---|---|---|---|
 | `--host` | `ADAPTER_HOST` | `127.0.0.1` | Bind address. Keep loopback unless you must expose it (see [Security](#security)). |
 | `--port` | `ADAPTER_PORT` | `8790` | Port. |
-| (none) | `ADAPTER_TOKEN` | random per run | Bearer token clients must send as the API key. **Set your own for anything long-running.** |
+| `--token-file` | `ADAPTER_TOKEN_FILE` | `~/.config/claude-code-openai-adapter/token` | Where the generated API key is stored. |
+| (none) | `ADAPTER_TOKEN` | unset | Fixed API key; overrides the key file and disables rotation. |
 | `--model` | `CLAUDE_MODEL` | `sonnet` | Model used when the request names none. Aliases: `sonnet`, `opus`, `haiku`. |
 | `--timeout` | `CLAUDE_TIMEOUT` | `300` | Seconds allowed per call. |
 | `--max-parallel` | `MAX_PARALLEL` | `2` | Concurrent `claude` processes. Each call spawns one. Keep low. |
@@ -110,7 +132,7 @@ curl -s http://127.0.0.1:8790/v1/chat/completions \
 |---|---|
 | Format | **openai** (Chat Completions). **Not** `openai-responses`: that API is not implemented and returns 404. |
 | Base URL | `http://<host the ARTEX container can reach>:8790/v1` |
-| API key | your `ADAPTER_TOKEN` |
+| API key | the output of `python3 adapter.py token` |
 | Model | `sonnet` (or `haiku` / `opus`) |
 | Streaming | Off (recommended; streaming is simulated, see below) |
 | Rate limit | A low cap (for example 10 per minute) |
@@ -128,12 +150,13 @@ Then click **Set as active**. Notes:
 ## Running as a service
 
 `deploy/claude-code-openai-adapter.service` is a systemd unit. Copy the repo to `/opt/claude-code-openai-adapter`,
-edit `User`, the token and `PATH` (it must include the directory of `claude`), then:
+edit `User` and `PATH` (it must include the directory of `claude`), then:
 
 ```bash
 sudo cp deploy/claude-code-openai-adapter.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now claude-code-openai-adapter
 journalctl -u claude-code-openai-adapter -f
+sudo -u <that user> python3 /opt/claude-code-openai-adapter/adapter.py token   # read the generated key
 ```
 
 Without systemd: `nohup python3 adapter.py > adapter.log 2>&1 &` (it will not survive a reboot).
@@ -178,13 +201,13 @@ Without systemd: `nohup python3 adapter.py > adapter.log 2>&1 &` (it will not su
 
 ## Security
 
-- **Authentication is mandatory.** Every endpoint except `/health` requires `Authorization: Bearer <token>`.
+- **Authentication is mandatory.** Every endpoint except `/health` requires `Authorization: Bearer <key>`. The key is generated, stored with mode 600, compared in constant time, and rotatable without a restart.
 - **Loopback by default.** Binding elsewhere prints a warning. Anyone who can reach the port and holds the
   token can spend your Claude usage. Use a firewall or a private network, and a long random token.
 - The model runs with **no tools** (`--tools ""`), so a prompt cannot make it touch the host. The *calling*
   tool may still act on tool calls it receives, so secure that side too.
 - `--log-calls` writes prompts and replies to disk in clear text. Leave it off in normal use and delete the file.
-- Do not commit your token. `.gitignore` already excludes `token`, `.env` and `*.log`.
+- Do not commit your key. The default key file lives outside the repo, and `.gitignore` also excludes `token`, `.env` and `*.log`.
 
 ## Terms and responsibility
 
@@ -201,7 +224,7 @@ Only use it with systems and data you are authorized to work with.
 
 | Symptom | Likely cause and fix |
 |---|---|
-| `401 unauthorized` | Wrong or missing token. The API key must equal `ADAPTER_TOKEN` (or the token printed at startup). |
+| `401 unauthorized` | Wrong, missing or **rotated** key. Run `python3 adapter.py token` (as the user that runs the server) and update the client. |
 | `502 ... claude exited ...` | `claude` not on `PATH` (use `--claude-bin`), not logged in (run `claude`, then `/login`), or the model alias is wrong. |
 | `404` from the client | The client is calling `/v1/responses`. Switch it to Chat Completions. |
 | Client says "no action" / replies as text instead of calling tools | The model's JSON was unusable. Enable `--log-calls`, look at `raw_output`, and lower the number of tools if the list is huge. |

@@ -81,6 +81,40 @@ class XmlInvokeFallback(unittest.TestCase):
         self.assertEqual([c["function"]["name"] for c in msg["tool_calls"]], ["list_facts"])
 
 
+class TokenStore(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "sub", "token")
+        A.CFG.update(token="", token_file=self.path)
+        A._cache.update(mtime=None, token="")
+
+    def test_generated_once_and_stable(self):
+        t1 = A.ensure_token(self.path)
+        self.assertTrue(t1.startswith("cca-") and len(t1) > 30)
+        self.assertEqual(A.ensure_token(self.path), t1)
+
+    def test_file_is_private(self):
+        A.ensure_token(self.path)
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+    def test_rotation_is_picked_up_without_restart(self):
+        t1 = A.ensure_token(self.path)
+        self.assertEqual(A.current_token(), t1)
+        t2 = A.new_token()
+        A.write_token(self.path, t2)
+        self.assertEqual(A.current_token(), t2)
+        self.assertNotEqual(t1, t2)
+
+    def test_env_token_overrides_file(self):
+        A.ensure_token(self.path)
+        A.CFG["token"] = "fixed-value"
+        self.assertEqual(A.current_token(), "fixed-value")
+
+    def test_missing_file_means_no_valid_token(self):
+        self.assertEqual(A.current_token(), "")
+
+
 class Prompt(unittest.TestCase):
     def test_roles_and_tools(self):
         msgs = [{"role": "system", "content": "be brief"},
